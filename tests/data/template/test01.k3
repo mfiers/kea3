@@ -1,0 +1,10 @@
+io:
+  - name: input
+  - name: output
+parameters:
+  - name: rabbit
+    default: Oryctolagus
+template: |
+  echo {{ rabbit }} {{ input }} {{ output }}
+  echo {{ input }} > {{ output }}
+  
