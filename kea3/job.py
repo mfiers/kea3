@@ -56,7 +56,6 @@ class K3Job:
         """
         Find, copy and load the template
         """
-        print('t', self.template)
         if Path(self.template).isdir():
             k3dir = Path(self.template) / 'k3'
             subdirs = k3dir.dirs() if k3dir.exists() else []
@@ -70,17 +69,16 @@ class K3Job:
                 exit()
             self.name = subdirs[0].basename()
             lg.info('template "%s" found in  %s', self.name, self.template)
-            
+
             if not self.template == '.':
                 # not pointing at the current folder
                 # copy the template (& argument file)
                 template_file = Path(self.template) / 'k3' / \
-                                self.name / 'template.k3'
-                
-                print(template_file)
+                    self.name / 'template.k3'
+
                 if template_file != self.template_file:
                     template_file.copy(self.template_file)
-                    
+
         elif re.match('[A-Za-z_]\w*', self.template):
             # assume the template is already present
             self.name = self.template
@@ -180,7 +178,6 @@ class K3Job:
         while True:
             iteration += 1
             for k, v in self.data['cl_args'].items():
-                #                print(k,v)
                 if not isinstance(v, str):
                     args_ok.add(k)
                     vctx[k] = v
@@ -318,7 +315,8 @@ class K3Job:
         self.ctx['prolog'] = []
 
         if self.data.get('mode') == 'reduce':
-            lg.warning('reduce mode - generate one job')
+            lg.info('reduce mode - generate one job')
+            self.ctx['i'] = 0
             for io in self.data['io']:
                 if 'expanded' in io:
                     self.ctx[io['name']] = io['expanded']
@@ -382,6 +380,7 @@ class K3Job:
         if self.runargs.force:
             # force is true - run, don't check if this
             # might already have been done
+            lg.debug("run - forced")
             return True
 
         latest_source_mtime = None
@@ -389,6 +388,7 @@ class K3Job:
         no_output = 0
         no_input = 0
 
+        b
         for io in self.data['io']:
             name = io['name']
             cat = io['cat']
@@ -403,6 +403,8 @@ class K3Job:
                 for f in filenames:
                     if not f.exists():
                         # an output file does not exist, run
+                        lg.info('output file missing: run')
+
                         return True
 
             mtimes = [x.mtime for x in filenames]
@@ -421,6 +423,7 @@ class K3Job:
                     latest_source_mtime = max(latest_source_mtime,
                                               max(mtimes))
 
+
         if (latest_source_mtime is None) or (earliest_output_mtime is None):
             return True
 
@@ -433,70 +436,89 @@ class K3Job:
                        no_output, no_input)
             return False
 
-    def run(self):
-        """ actually run """
+    def save_scripts(self) -> dict:
 
-        self.app.run_hook('pre_check', self)
-        
-        template = jinja2.Template(self.data['template'])
-        code = template.render(self.ctx)
+        rv = {}
 
         stamp = datetime.utcnow()
         stamp = stamp.replace(microsecond=0)
         stamp = datetime.isoformat(stamp)
+
+        self.ctx['stamp'] = stamp
+
         script_dir = self.workdir / 'script'
         script_dir.makedirs_p()
 
-        prolog = script_dir / \
+        self.prolog_script = script_dir / \
             ('%s__%s__%s.prolog.sh' % (self.name, self.ctx['i'],  stamp))
 
-        epilog = script_dir / \
+        self.epilog_script = script_dir / \
             ('%s__%s__%s.prolog.sh' % (self.name, self.ctx['i'],  stamp))
 
-        script = script_dir / \
-            ('%s__%s__%s.sh' % (self.name, self.ctx['i'],  stamp))
+        self.main_script = (script_dir /
+                            ('%s__%s__%s.sh' % (self.name, self.ctx['i'],  stamp))).abspath()
 
-        script = script.abspath()
+        if len(self.ctx['prolog']) > 0:
+            with open(self.prolog_script, 'w') as F:
+                F.write("#!/bin/bash\n\n")
+                F.write("\n\n".join(self.ctx['prolog']))
+                self.prolog_script.chmod('a+x')
+                rv['prolog'] = self.prolog_script
 
-        self.ctx['script_file'] = script
+        with open(self.main_script, 'w') as F:
+            F.write(self.code)
+
+        rv['main'] = self.main_script
+        self.main_script.chmod('a+x')
+
+        if len(self.ctx['epilog']) > 0:
+            with open(self.epilog_script, 'w') as F:
+                F.write("#!/bin/bash\n\n")
+                F.write("\n\n".join(self.ctx['epilog']))
+            self.epilog_script.chmod('a+x')
+            rv['epilog'] = self.epilog_script
+
+        return rv
+
+    def run(self) -> int:
+        """ actually run """
+
+        self.app.run_hook('pre_check', self)
+
+        template = jinja2.Template(self.data['template'])
+        self.code = template.render(self.ctx)
+        
+        self.app.run_hook('pre_run', self)
+
+        scripts = self.save_scripts()
+
+        cl = []
+
+        if 'prolog' in scripts:
+            cl.append('source %s' % scripts['prolog'])
+
+        cl.append('source %s' % scripts['main'])
+
+        if 'epilog' in scripts:
+            cl.append('source %s' % scripts['epilog'])
+
         if not self.check():
-            lg.info("skipping")
+            lg.warning("skipping")
             self.app.run_hook('skip_run', self)
             return
 
         lg.info("run job %d", self.ctx['i'])
 
-        self.app.run_hook('pre_run', self)
-
         if self.runargs.dryrun:
-            print(code)
+            print(self.code)
             print("#" + '-' * 80)
+            self.app.run_hook('dry_run', self)
+            return 0
         else:
-            cl = []
-            if len(self.ctx['prolog']) > 0:
-                with open(prolog, 'w') as F:
-                    F.write("#!/bin/bash\n\n")
-                    F.write("\n\n".join(self.ctx['prolog']))
-                cl.append('source %s' % prolog)
-                prolog.chmod('a+x')
-
-            with open(script, 'w') as F:
-                F.write(code)
-            cl.append('source %s' % script)
-            script.chmod('a+x')
-
-            if len(self.ctx['epilog']) > 0:
-                with open(epilog, 'w') as F:
-                    F.write("#!/bin/bash\n\n")
-                    F.write("\n\n".join(self.ctx['epilog']))
-                cl.append('source %s' % epilog)
-                epilog.chmod('a+x')
-
             cl = "; ".join(cl)
             lg.warning('run: %s', cl)
             rc = sp.call(cl, shell=True)
             lg.warning("Run finished with RC: %s", rc)
             if rc == 0:
                 self.app.run_hook('post_run', self)
-
-
+            return rc

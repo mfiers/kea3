@@ -1,18 +1,7 @@
 
 import argparse
-from collections import defaultdict
-import copy
-from datetime import datetime
-import glob
 import logging
-import re
-import subprocess as sp
-
-import fantail
-import jinja2
 import leip
-from path import Path
-import sh
 
 from kea3.job import K3Job
 
@@ -21,13 +10,13 @@ lg = logging.getLogger('k3.run')
 TEMPLATE = None
 
 
-
 @leip.arg('arguments', nargs=argparse.REMAINDER)
 @leip.arg('-n', '--jobstorun', help='no of jobs to run', type=int)
 @leip.arg('-j', '--threads', help='no of jobs to run in parallel',
           type=int, default=1)
 @leip.flag('-d', '--dryrun', help='do not run')
-@leip.flag('-r', '--force', help='force run, regardless of time check')
+@leip.flag('-B', '--always_run', dest='force',
+           help='force run, regardless of checks')
 @leip.arg('template')
 @leip.command
 def run(app, args):
@@ -75,6 +64,15 @@ def k3_show(app, args):
             nof = ' (#%d)' % len(par['expanded'])
         print('- %s: %s%s' % (par['name'], par['default'], nof))
 
+@leip.arg('template')
+@leip.commandName('update')
+def k3_update(app, args):
+    """Update local (in this wd) template file from another template
+    file
+
+    """
+    pass
+    
 
 @leip.arg('value')
 @leip.arg('key')
