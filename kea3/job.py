@@ -56,6 +56,10 @@ class K3Job:
         """
         Find, copy and load the template
         """
+        if '~' in self.template:
+            self.template = str(Path(self.template).expanduser())
+
+            
         if Path(self.template).isdir():
             k3dir = Path(self.template) / 'k3'
             subdirs = k3dir.dirs() if k3dir.exists() else []
@@ -92,7 +96,7 @@ class K3Job:
                 lg.debug("Copying template_file to %s", self.template_file)
                 template_file.copy(self.template_file)
         else:
-            raise NotImplementedError("Other sources for templates")
+            raise NotImplementedError("Need other source for templates: %s", self.template)
 
         lg.debug("Template name is: %s", self.name)
         if not self.template_file.exists():
@@ -115,6 +119,7 @@ class K3Job:
         """
         fantail.yaml_file_save(self.data, self.template_file)
 
+        
     def parse_arguments(self):
 
         def _process_parameter(parser, par, cl_args):
@@ -350,7 +355,7 @@ class K3Job:
         else:
             raise Exception("Invalid job")
 
-        lg.warning("generating %d jobs", nojobs)
+        lg.info("generating %d jobs", nojobs)
 
         for i in range(nojobs):
             # copying shallowly...
@@ -388,7 +393,6 @@ class K3Job:
         no_output = 0
         no_input = 0
 
-        b
         for io in self.data['io']:
             name = io['name']
             cat = io['cat']
@@ -516,9 +520,12 @@ class K3Job:
             return 0
         else:
             cl = "; ".join(cl)
-            lg.warning('run: %s', cl)
+            lg.info('run: %s', cl)
             rc = sp.call(cl, shell=True)
-            lg.warning("Run finished with RC: %s", rc)
+            if rc != 0:
+                lg.warning("Run finished with RC: %s", rc)
+            else:
+                lg.info("Run finished successfully")
             if rc == 0:
                 self.app.run_hook('post_run', self)
             return rc
