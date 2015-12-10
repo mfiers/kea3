@@ -2,6 +2,7 @@
 import argparse
 import logging
 import leip
+from xtermcolor import colorize as cz
 
 from kea3.job import K3Job
 
@@ -45,24 +46,42 @@ def run(app, args):
             p.map(_runner, job.expand())
 
 
+@leip.flag('-r', '--raw')
+@leip.arg('template', default='.', nargs='?')
 @leip.commandName('show')
 def k3_show(app, args):
-    job = K3Job(app, args)
-    job.prepare()
-    print('mode: %s' % job.data.get('mode', 'map'))
-    print('io')
+    job = K3Job(app, args, args.template)
+    job.get_template()
+    job.load_template()
+
+    if args.raw:
+        print(job.data.pretty())
+        return
+    
+    c_green = 106
+    c_red = 160
+    c_blue = 26
+    c_grey = 242
+    
+    print(cz('mode:', ansi=c_red), end=" ")
+    print(cz(job.data.get('mode', 'map'), ansi=c_green))
+    print(cz('io:', ansi=c_red))
     for io in job.data['io']:
         nof = ''
         if 'expanded' in io:
             nof = ' (#%d)' % len(io['expanded'])
-        print('- %s: %s%s' % (io['name'], io['default'], nof))
+        print('- %s: %s%s' % (cz(io['name'], ansi=c_blue), io.get('default', ''), nof))
 
-    print('parameter')
+    print(cz('parameter', ansi=c_red))
     for par in job.data['parameters']:
         nof = ''
         if 'expanded' in par:
             nof = ' (#%d)' % len(par['expanded'])
-        print('- %s: %s%s' % (par['name'], par['default'], nof))
+        print('- %s: %s%s' % (cz(par['name'], ansi=c_blue),
+                              par['default'], nof))
+
+    print(cz(('-' * 30 + 'template' + '-' * 30), ansi=c_grey))
+    print(job.data['template'])
 
 @leip.arg('template')
 @leip.commandName('update')
