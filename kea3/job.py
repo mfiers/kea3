@@ -388,7 +388,6 @@ class K3Job:
         no_output = 0
         no_input = 0
 
-        b
         for io in self.data['io']:
             name = io['name']
             cat = io['cat']
