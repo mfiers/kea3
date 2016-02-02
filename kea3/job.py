@@ -248,7 +248,7 @@ class K3Job:
             if 'cat' not in io:
                 io['cat'] = {'in': 'input',
                              'ou': 'output',
-                             'db': 'db'}[name[:2]]
+                             'db': 'db'}.get(name.lower()[:2], 'unknown')
 
             value = self.data['cl_args'][name]
 

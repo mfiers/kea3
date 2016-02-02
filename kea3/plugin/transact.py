@@ -13,6 +13,9 @@ lg = logging.getLogger(__name__)
 
 @leip.hook('prepare', 5)
 def prep_transact(app):
+    if not 'run' in app.leip_commands:
+        return
+    
     runcommand = app.leip_commands['run']
     parser = runcommand._leip_command_parser
     parser.add_argument('--fts', '--force-transaction-save',
