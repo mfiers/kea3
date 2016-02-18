@@ -15,13 +15,19 @@ lg = logging.getLogger(__name__)
 def prep_transact(app):
     if not 'run' in app.leip_commands:
         return
-    
-    runcommand = app.leip_commands['run']
-    parser = runcommand._leip_command_parser
-    parser.add_argument('--fts', '--force-transaction-save',
-                        action='store_true',
-                        help="ensure this transaction is saved, even when "
-                        + " the job is skipped")
+
+    commands = [app.leip_commands['run'],
+                app.leip_commands['pbs']]
+
+    for rc in commands:
+        parser = rc._leip_command_parser
+        parser.add_argument('--fts', '--force-transaction-save',
+                            action='store_true',
+                            help="ensure this transaction is saved, even when "
+                            + " the job is skipped")
+        parser.add_argument('--sts', '--skip-transaction-save',
+                            action='store_true',
+                            help="skip saving transcation")
     
     
 def _save_transaction(job):
@@ -62,5 +68,6 @@ def dryrun(app, job):
 @leip.hook('post_run')
 def postrun(app, job):
     # save transaction
-    _save_transaction(job)
+    if not app.trans['args'].sts:
+        _save_transaction(job)
 
