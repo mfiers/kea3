@@ -1,4 +1,5 @@
 
+
 import argparse
 
 import copy
@@ -9,6 +10,7 @@ import re
 import subprocess as sp
 
 import fantail
+import fantail.util
 import jinja2
 from path import Path
 
@@ -24,6 +26,7 @@ class K3Job:
         lg.debug("Instantiate job with template: %s", template)
         self.app = app
         self.runargs = args
+        self.skipped = False
         self.argv = argv
 
         # template name this object got called with
@@ -92,9 +95,26 @@ class K3Job:
             lg.debug("Found template file: %s", self.template)
             template_file = Path(self.template)
             self.name = template_file.basename().replace('.k3', '')
+
             if template_file != self.template_file:
+
+                #load & save
+                self.data = fantail.yaml_file_loader(template_file)
+                # check file references:
+                for fref in 'template epilog prolog'.split():
+                    tpath = self.data.get(fref, '')
+                    if tpath.startswith('file://'):
+                        tpath = tpath.replace('file://', '')
+                        if not tpath.startswith('/'):
+                            tpath = Path(template_file).dirname() / tpath
+
+                        with open(tpath) as FT:
+                            self.data[fref] = FT.read()
+
                 lg.debug("Copying template_file to %s", self.template_file)
-                template_file.copy(self.template_file)
+                self.save_template()
+#                fantail.yaml_file_save(self.data, self.template_file)
+
         else:
             raise NotImplementedError("Need other source for templates: %s", self.template)
 
@@ -112,11 +132,17 @@ class K3Job:
         Load the local template.
         """
         self.data = fantail.yaml_file_loader(self.template_file)
+#        if self.data.get('template', '').startswith('file://'):
+#            self.data['template'] = fantail.yaml_file_loader(
+#                sefl.data['template'].replace('file://', '')
+        
 
     def save_template(self):
         """
         Save the current data structure to the local template
         """
+        
+        self.data['template'] = fantail.util.literal_str(self.data['template'])
         fantail.yaml_file_save(self.data, self.template_file)
 
         
@@ -215,11 +241,9 @@ class K3Job:
                 lg.debug("Parameter expansion, excellent, all is well")
                 # done!
                 break
-            elif iteration > 5 or len(args_ok) == last_no_args_ok:
-                lg.critical("cannot resolve parameters")
-                for k, v in self.kwargs.items():
-                    print('%s=%s' % (k, v))
-                exit(-1)
+            elif iteration > 5 or len(args_ok) == last_no_args_ok:                
+                lg.debug("cannot resolve parameters at the moment: %s" % str(self.data['cl_args']))
+                break
             else:
                 last_no_args_ok = len(args_ok)
                 # let's try another round
@@ -319,8 +343,8 @@ class K3Job:
         self.ctx['epilog'] = []
         self.ctx['prolog'] = []
 
-        if self.data.get('mode') == 'reduce':
-            lg.info('reduce mode - generate one job')
+        if self.data.get('mode') in ['start', 'reduce']:
+            lg.warning('%s mode - generate one job', self.data['mode'])
             self.ctx['i'] = 0
             for io in self.data['io']:
                 if 'expanded' in io:
@@ -332,6 +356,8 @@ class K3Job:
                     self.ctx[par['name']] = par['expanded']
                 else:
                     self.ctx[par['name']] = par['pattern']
+
+            self.app.run_hook('expanded', self)
             yield self
             return
 
@@ -348,6 +374,7 @@ class K3Job:
                 expfields.append(par['name'])
                 nojobs.add(len(par['expanded']))
 
+                
         if len(nojobs) == 0:
             nojobs = 0
         elif len(nojobs) == 1:
@@ -378,6 +405,7 @@ class K3Job:
                 else:
                     newjob.ctx[par['name']] = par['pattern']
 
+            self.app.run_hook('expanded', newjob)
             yield newjob
 
     def check(self):
@@ -398,6 +426,12 @@ class K3Job:
             cat = io['cat']
             value = self.ctx[name]
 
+            lg.info("%-10s %-10s %s", cat, name, value)
+
+            if cat == 'executable':
+                #do not check executables
+                continue
+            
             if isinstance(value, list):
                 filenames = [Path(x) for x in value]
             else:
@@ -407,11 +441,12 @@ class K3Job:
                 for f in filenames:
                     if not f.exists():
                         # an output file does not exist, run
-                        lg.info('output file missing: run')
+                        lg.info('output file (%s) missing, run', f)
 
                         return True
 
             mtimes = [x.mtime for x in filenames]
+                
             if cat == 'output':
                 no_output += 1
                 if earliest_output_mtime is None:
@@ -432,35 +467,37 @@ class K3Job:
             return True
 
         if latest_source_mtime > earliest_output_mtime:
-            lg.info("%d input file(s) newer than (%d) output file(s)",
+            lg.info("%d input file(s) newer than %d output file(s)",
                     no_input, no_output)
             return True
         else:
-            lg.warning("%d output file(s) newer than %d input file(s)",
+            lg.info("%d output file(s) newer than %d input file(s)",
                        no_output, no_input)
             return False
 
-    def save_scripts(self) -> dict:
-
-        rv = {}
-
+    def prep_save_scripts(self) -> None:
+        
         stamp = datetime.utcnow()
         stamp = stamp.replace(microsecond=0)
-        stamp = datetime.isoformat(stamp)
+        stamp = datetime.isoformat(stamp).replace(':', '').replace('-', '')
 
         self.ctx['stamp'] = stamp
-
         script_dir = self.workdir / 'script'
         script_dir.makedirs_p()
 
-        self.prolog_script = script_dir / \
-            ('%s__%s__%s.prolog.sh' % (self.name, self.ctx['i'],  stamp))
+        self.prolog_script = (script_dir / \
+            ('%s__%s__%s.prolog.sh' % (self.name, self.ctx['i'],  stamp))).abspath()
 
-        self.epilog_script = script_dir / \
-            ('%s__%s__%s.prolog.sh' % (self.name, self.ctx['i'],  stamp))
+        self.epilog_script = (script_dir / \
+            ('%s__%s__%s.epilog.sh' % (self.name, self.ctx['i'],  stamp))).abspath()
 
-        self.main_script = (script_dir /
-                            ('%s__%s__%s.sh' % (self.name, self.ctx['i'],  stamp))).abspath()
+        self.main_script = ( script_dir /
+            ('%s__%s__%s_main' % (self.name, self.ctx['i'],  stamp))).abspath()
+
+        
+    def save_scripts(self) -> dict:
+
+        rv = {}
 
         if len(self.ctx['prolog']) > 0:
             with open(self.prolog_script, 'w') as F:
@@ -484,30 +521,79 @@ class K3Job:
 
         return rv
 
+    def executor(self, cl:list) -> int:
+        cl = "; ".join(cl)
+        lg.info('run: %s', cl)
+        print(cl)
+        rc = sp.call(cl, shell=True)
+        if rc != 0:
+            lg.warning("Run finished with RC: %s", rc)
+        else:
+            lg.info("Run finished successfully")
+        if rc == 0:
+            self.app.run_hook('post_run', self)
+        return rc
+
     def run(self) -> int:
         """ actually run """
 
         self.app.run_hook('pre_check', self)
 
-        template = jinja2.Template(self.data['template'])
-        self.code = template.render(self.ctx)
+        #first fix ctx - variables might still carry variables
+        while True:
+            no_changed = 0
+            for k, v in self.ctx.items():
+                if not isinstance(v, str):
+                    continue
+                if not '{{' in v and not '{%' in v:
+                    continue
+                #attempt render
+                template = jinja2.Template(v)
+                vv = template.render(self.ctx)
+                if vv != v:               
+                    no_changed += 1
+                    self.ctx[k] = vv
+            if no_changed == 0:
+                break
+            
+        template = self.data['template']
+        _last_template = template
+        _template_i = 0
+        while True:
+            _template_i += 1
+            template = jinja2.Template(template)
+            template = template.render(self.ctx)
+            if not '{{' in template and not '{%' in template:
+                break
+            if template == _last_template:
+                break
+            if _template_i > 4:
+                break
+            _last_template = template
+
+    
+        self.code = template
+
+        scripts = self.prep_save_scripts()
         
         self.app.run_hook('pre_run', self)
 
         scripts = self.save_scripts()
+
 
         cl = []
 
         if 'prolog' in scripts:
             cl.append('source %s' % scripts['prolog'])
 
-        cl.append('source %s' % scripts['main'])
+        cl.append('%s' % scripts['main'])
 
         if 'epilog' in scripts:
-            cl.append('source %s' % scripts['epilog'])
+            cl.append('%s' % scripts['epilog'])
 
         if not self.check():
-            lg.warning("skipping")
+            lg.info("skipping")
+            self.skipped = True
             self.app.run_hook('skip_run', self)
             return
 
@@ -519,13 +605,5 @@ class K3Job:
             self.app.run_hook('dry_run', self)
             return 0
         else:
-            cl = "; ".join(cl)
-            lg.info('run: %s', cl)
-            rc = sp.call(cl, shell=True)
-            if rc != 0:
-                lg.warning("Run finished with RC: %s", rc)
-            else:
-                lg.info("Run finished successfully")
-            if rc == 0:
-                self.app.run_hook('post_run', self)
-            return rc
+            #actually execute cl
+            return self.executor(cl)
