@@ -1,3 +1,4 @@
+import sys
 
 import argparse
 import logging
@@ -13,14 +14,23 @@ TEMPLATE = None
 
 @leip.arg('arguments', nargs=argparse.REMAINDER)
 @leip.arg('-n', '--jobstorun', help='no of jobs to run', type=int)
-@leip.arg('-j', '--threads', help='no of jobs to run in parallel',
-          type=int, default=1)
+@leip.arg('-j',
+          '--threads',
+          help='no of jobs to run in parallel',
+          type=int,
+          default=1)
 @leip.flag('-d', '--dryrun', help='do not run')
-@leip.flag('-B', '--always_run', dest='force',
-           help='force run, regardless of checks')
+@leip.flag(
+    '-B', '--always_run', dest='force', help='force run, regardless of checks')
 @leip.arg('template')
 @leip.command
 def run(app, args):
+
+    # first - maintain a run.sh script
+    if ('-h' not in sys.argv) and ('--help' not in sys.argv):
+        with open('run.sh', 'a') as F:
+            F.write('# %s\n' % " ".join(sys.argv))
+
     job = K3Job(app, args, args.template, args.arguments)
     job.prepare()
 
@@ -57,12 +67,14 @@ def k3_show(app, args):
     if args.raw:
         print(job.data.pretty())
         return
-    
+
     c_green = 106
     c_red = 160
     c_blue = 26
     c_grey = 242
-    
+
+    print(cz('name:', ansi=c_red), end=" ")
+    print(cz(job.name, ansi=c_green))
     print(cz('mode:', ansi=c_red), end=" ")
     print(cz(job.data.get('mode', 'map'), ansi=c_green))
     print(cz('io:', ansi=c_red))
@@ -70,7 +82,8 @@ def k3_show(app, args):
         nof = ''
         if 'expanded' in io:
             nof = ' (#%d)' % len(io['expanded'])
-        print('- %s: %s%s' % (cz(io['name'], ansi=c_blue), io.get('default', ''), nof))
+        print('- %s: %s%s' %
+              (cz(io['name'], ansi=c_blue), io.get('default', ''), nof))
 
     print(cz('parameter', ansi=c_red))
     for par in job.data['parameters']:
@@ -78,10 +91,11 @@ def k3_show(app, args):
         if 'expanded' in par:
             nof = ' (#%d)' % len(par['expanded'])
         print('- %s: %s%s' % (cz(par['name'], ansi=c_blue),
-                              par['default'], nof))
+                              par.get('default', '<none>'), nof))
 
     print(cz(('-' * 30 + 'template' + '-' * 30), ansi=c_grey))
     print(job.data['template'])
+
 
 @leip.arg('template')
 @leip.commandName('update')
@@ -91,7 +105,7 @@ def k3_update(app, args):
 
     """
     pass
-    
+
 
 @leip.arg('value')
 @leip.arg('key')

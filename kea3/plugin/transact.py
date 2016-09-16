@@ -16,27 +16,40 @@ def prep_transact(app):
     if not 'run' in app.leip_commands:
         return
 
-    commands = [app.leip_commands['run'],
-                app.leip_commands['pbs']]
+    commands = [app.leip_commands['run'], app.leip_commands['pbs']]
 
     for rc in commands:
         parser = rc._leip_command_parser
-        parser.add_argument('--fts', '--force-transaction-save',
-                            action='store_true',
-                            help="ensure this transaction is saved, even when "
-                            + " the job is skipped")
-        parser.add_argument('--sts', '--skip-transaction-save',
-                            action='store_true',
-                            help="skip saving transcation")
-    
-    
-def _save_transaction(job):
+        parser.add_argument(
+            '--fts',
+            '--force-transaction-save',
+            action='store_true',
+            help="ensure this transaction is saved, even when " +
+            " the job is skipped")
+        parser.add_argument(
+            '--sts',
+            '--skip-transaction-save',
+            action='store_true',
+            help="skip saving transcation")
+
+
+def save_transaction(job):
     """ save transaction """
+    cl = get_transaction_cl()
+    lg.info("save transaction")
+    print(job.conf)
+    #sp.call(cl, shell=True)
+
+
+def get_transaction_cl(job) -> str:
+    """ get the save transaction command line """
     cl = 'mad ta add'.split()
-    
-    cl.append('--script')
-    cl.append("'%s'" % job.main_script)
-    
+
+    cl.append('--script "%s"' % job.main_script)
+
+    for xc in job.data['executable']:
+        cl.append('--executable %s' % xc)
+
     for io in job.data['io']:
         filename = job.ctx[io['name']]
         name = io['name']
@@ -48,26 +61,37 @@ def _save_transaction(job):
             for fn in filename:
                 cl.append(' --%s %s:%s' % (cat, name, fn))
 
-    lg.info("save transaction")
+    return " ".join(cl)
 
-    print(" ".join(cl))
-    sp.call(" ".join(cl), shell=True)
-    
+
+@leip.hook('pre_run')
+def add_ta_to_epilog(app, job):
+    mode = app.conf['plugin']['transact'].get('run_or_save', 'save')
+    tacl = get_transaction_cl(job)
+    if mode == 'run':
+        if not app.trans['args'].sts:
+            job.ctx['epilog'].append(tacl)
+    elif mode == 'save':
+        with open('mad.transaction.sh', 'a') as F:
+            F.write("\n" + tacl + "\n")
+
 
 @leip.hook('skip_run')
 def skiprun(app, job):
     # save transaction if fts is specified
     job.save_scripts()
     if app.trans['args'].fts:
-        _save_transaction(job)
+        save_transaction(job)
+
 
 @leip.hook('dry_run')
 def dryrun(app, job):
     skiprun(app, job)
 
+
 @leip.hook('post_run')
 def postrun(app, job):
     # save transaction
     if not app.trans['args'].sts:
-        _save_transaction(job)
-
+        pass
+        #save_transaction(job)
