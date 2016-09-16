@@ -6,6 +6,7 @@ import glob
 import logging
 import re
 import subprocess as sp
+import uuid
 
 import fantail
 import fantail.util
@@ -18,31 +19,43 @@ TEMPLATE = None
 
 
 class K3Job:
-    def __init__(self, app, args, template='.', argv=[]):
+    def __init__(self, app, args, template='.', argv=[], transient=False):
+
         lg.debug("Instantiate job with template: %s", template)
         self.app = app
+        self.transient = transient
         self.runargs = args
         self.skipped = False
         self.argv = argv
 
         # template name this object got called with
         self.template = template
-
+        self._template_file = None
         # the context will be used for parameter expaions
         self.ctx = fantail.Fantail()
 
     @property
     def workdir(self):
-        wd = Path('./k3') / self.name
-        wd.makedirs_p()
-        return wd
+        if self.transient:
+            wd = Path("~/.k3/%s" % uuid.uuid4())
+            wd.makedirs_p()
+            return wd
+        else:
+            wd = Path('./k3') / self.name
+            wd.makedirs_p()
+            return wd
 
     @property
     def template_file(self):
-        return self.workdir / 'template.k3'
+        if self.transient:
+            return self._template_file
+        else:
+            return self.workdir / 'template.k3'
 
     @property
     def cl_arg_file(self):
+        if transient:
+            raise Exception('No arguments please')
         return self.workdir / 'arguments.k3'
 
     def prepare(self):
@@ -59,6 +72,11 @@ class K3Job:
             self.template = str(Path(self.template).expanduser())
 
         if Path(self.template).isdir():
+            if self.transient:
+                lg.error("must specify a template name or file, not a dir")
+                lg.error("when in transient mode")
+                exit(-1)
+
             k3dir = Path(self.template) / 'k3'
             subdirs = k3dir.dirs() if k3dir.exists() else []
             if len(subdirs) == 0:
@@ -81,35 +99,31 @@ class K3Job:
                 if template_file != self.template_file:
                     template_file.copy(self.template_file)
 
-        elif re.match('[A-Za-z_]\w*', self.template):
-            # assume the template is already present
-            self.name = self.template
+        elif not self.template.endswith('.k3') and \
+                re.match('[A-Za-z_]\w*', self.template):
+            if (Path('k3') / self.template / 'template.k3').exists():
+                if self.transient:
+                    lg.error("Not possible to use k3/template")
+                    lg.error("when in transient mode")
+                    exit(-1)
+
+                # the template is present
+                self.name = self.template
+            else:
+                template_file = Path(self.app.conf['default_template_dir'])\
+                    .expanduser() / ('%s.k3' % self.template)
+                if not template_file.exists():
+                    lg.error("Cannot find template")
+                    exit(-1)
+                self.name = self.template
+                self.retrieve_template_file(template_file)
 
         elif Path(self.template).exists() and self.template.endswith('.k3'):
             # template points to a file - get it
             lg.debug("Found template file: %s", self.template)
             template_file = Path(self.template)
             self.name = template_file.basename().replace('.k3', '')
-
-            if template_file != self.template_file:
-
-                # load & save
-                self.data = fantail.yaml_file_loader(template_file)
-                # check file references:
-                for fref in 'template epilog prolog'.split():
-                    tpath = self.data.get(fref, '')
-                    if tpath.startswith('file://'):
-                        tpath = tpath.replace('file://', '')
-                        if not tpath.startswith('/'):
-                            tpath = Path(template_file).dirname() / tpath
-
-                        with open(tpath) as FT:
-                            self.data[fref] = FT.read()
-
-                lg.debug("Copying template_file to %s", self.template_file)
-                self.save_template()
-#                fantail.yaml_file_save(self.data, self.template_file)
-
+            self.retrieve_template_file(template_file)
         else:
             raise NotImplementedError("Need other source for templates: %s",
                                       self.template)
@@ -122,6 +136,27 @@ class K3Job:
         lg.debug("Found template: %s", self.name)
 
         self.ctx['template']['name'] = self.name
+
+    def retrieve_template_file(self, template_file):
+        self.data = fantail.yaml_file_loader(template_file)
+        assert template_file.exists()
+
+        for fref in 'template epilog prolog'.split():
+            tpath = self.data.get(fref, '')
+            if tpath.startswith('file://'):
+                tpath = tpath.replace('file://', '')
+                if not tpath.startswith('/'):
+                    tpath = Path(template_file).dirname() / tpath
+
+                with open(tpath) as FT:
+                    self.data[fref] = FT.read()
+
+        if self.transient:
+            self._template_file = template_file
+        else:
+            lg.debug("Copying template_file to %s", self.template_file)
+            self.save_template()
+
 
     def load_template(self):
         """
@@ -136,9 +171,9 @@ class K3Job:
         """
         Save the current data structure to the local template
         """
-
-        self.data['template'] = fantail.util.literal_str(self.data['template'])
-        fantail.yaml_file_save(self.data, self.template_file)
+        if not self.transient:
+            self.data['template'] = fantail.util.literal_str(self.data['template'])
+            fantail.yaml_file_save(self.data, self.template_file)
 
     def parse_arguments(self):
         def _process_parameter(parser, par, cl_args):
@@ -288,8 +323,8 @@ class K3Job:
         if len(glob_fields) > 1:
             raise ValueError('more than one glob to unpack')
 
-        # expand pattern
 
+        # expand pattern
         gf = glob_fields[0]
         for io in self.data['io']:
             if gf == io['name']:
@@ -342,6 +377,8 @@ class K3Job:
         self.ctx['epilog'] = []
         self.ctx['prolog'] = []
 
+        lg.debug("start expansion")
+
         if self.data.get('mode') in ['start', 'reduce']:
             lg.warning('%s mode - generate one job', self.data['mode'])
             self.ctx['i'] = 0
@@ -352,7 +389,6 @@ class K3Job:
                     self.ctx[io['name']] = io['pattern']
             for par in self.data['parameters']:
                 if 'expanded' in par:
-
                     self.ctx[par['name']] = par['expanded']
                 else:
                     self.ctx[par['name']] = par['pattern']
@@ -365,10 +401,15 @@ class K3Job:
 
         nojobs = set()
         expfields = []
+
         for io in self.data['io']:
             if 'expanded' in io:
                 expfields.append(io['name'])
                 nojobs.add(len(io['expanded']))
+            else:
+                expfields.append(None)
+                nojobs.add(1)
+
         for par in self.data['parameters']:
             if 'expanded' in par:
                 expfields.append(par['name'])

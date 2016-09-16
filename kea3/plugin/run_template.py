@@ -11,7 +11,6 @@ lg = logging.getLogger('k3.run')
 
 TEMPLATE = None
 
-
 @leip.arg('arguments', nargs=argparse.REMAINDER)
 @leip.arg('-n', '--jobstorun', help='no of jobs to run', type=int)
 @leip.arg('-j',
@@ -24,6 +23,24 @@ TEMPLATE = None
     '-B', '--always_run', dest='force', help='force run, regardless of checks')
 @leip.arg('template')
 @leip.command
+def t(app, args):
+    args.transient = True
+    return run(app, args)
+    
+
+@leip.arg('arguments', nargs=argparse.REMAINDER)
+@leip.arg('-n', '--jobstorun', help='no of jobs to run', type=int)
+@leip.arg('-j',
+          '--threads',
+          help='no of jobs to run in parallel',
+          type=int,
+          default=1)
+@leip.flag('-d', '--dryrun', help='do not run')
+@leip.flag('-t', '--transient', help='do not copy the template')
+@leip.flag(
+    '-B', '--always_run', dest='force', help='force run, regardless of checks')
+@leip.arg('template')
+@leip.command
 def run(app, args):
 
     # first - maintain a run.sh script
@@ -31,7 +48,9 @@ def run(app, args):
         with open('run.sh', 'a') as F:
             F.write('# %s\n' % " ".join(sys.argv))
 
-    job = K3Job(app, args, args.template, args.arguments)
+    job = K3Job(app, args, args.template, args.arguments,
+                transient = args.transient)
+
     job.prepare()
 
     # expand - generate a subjob for possible io/globs
